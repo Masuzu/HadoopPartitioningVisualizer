@@ -51,16 +51,18 @@
   /////////////////////////////
 
   d3.json('data/data.json', function (error, data) {
-    var mpr = chordMpr(data);
-
     var mapperToReducerTable = {};
+    var dataSizeReceived = {};
+    var dataSizeReceivedFromRemovedMappers = {};
+    var fictiveIdOfRemovedMappers = 99999999;
 
+    // Build dictionaries mapperToReducerTable and dataSizeReceived
     _.each(data, function (elem) {
       var mapper = mapperName(elem.mapperId);
-      mpr.addToMap(mapper);
       if (!(mapper in mapperToReducerTable)) {
         mapperToReducerTable[mapper] = new Set();
       }
+      dataSizeReceived[mapper] = {};
       _.each(elem.sizePerPartition, function (sizeInBytes, partitionId) {
         var reducer = reducerName(partitionId);
         mapperToReducerTable[mapper].add(reducer);
@@ -68,16 +70,80 @@
           mapperToReducerTable[reducer] = new Set();
         }
         mapperToReducerTable[reducer].add(mapper);
+        dataSizeReceived[mapper][reducer] = sizeInBytes;
       });
     });
 
-    _.each(mapperToReducerTable, function(value, key) {
-      if (isReducer(key)) mpr.addToMap(key);
+    // Sample data
+    var samplingRatio = 1/10;
+    var counter = 0;
+    var mappersToRemove = [];
+    for (var name in mapperToReducerTable) {
+      // check if the property/key is defined in the object itself, not in parent
+      if (mapperToReducerTable.hasOwnProperty(name)) {
+        if (isMapper(name) && counter++ % (1 / samplingRatio) != 0) {
+          mappersToRemove.push(name);
+        }
+      }
+    }
+
+    // Remove mappers and compute data size sent by those mappers
+    var dataSizeSentFromRemovedMappers = 0;
+    _.each(mappersToRemove, function (mapper) {
+      mapperToReducerTable[mapper].forEach(function(reducer) {
+        mapperToReducerTable[reducer].delete(mapper);
+        dataSizeSentFromRemovedMappers += dataSizeReceived[mapper][reducer];
+        if (!(reducer in dataSizeReceivedFromRemovedMappers)) {
+          dataSizeReceivedFromRemovedMappers[reducer] = 0;
+        }
+
+        dataSizeReceivedFromRemovedMappers[reducer] += dataSizeReceived[mapper][reducer];
+      });
+
+      delete mapperToReducerTable[mapper];
+    });
+
+    // Clean input data
+    var dataIndicesToRemove = [];
+    counter = 0;
+    _.each(data, function(e) {
+      if (mappersToRemove.indexOf(mapperName(e.mapperId)) !== -1) {
+        dataIndicesToRemove.push(counter);
+      }
+      ++counter;
+    });
+    _.each(dataIndicesToRemove, function (i) {
+      data.splice(i, 1);
+    });
+
+    // Add fictive mega mapper representing removed mappers
+    mapperToReducerTable[mapperName(fictiveIdOfRemovedMappers)] = new Set();
+    var sizesPerPartitionForRemovedMappers = {};
+    for (var reducer in dataSizeReceivedFromRemovedMappers) {
+      if (dataSizeReceivedFromRemovedMappers.hasOwnProperty(reducer)) {
+        sizesPerPartitionForRemovedMappers[reducer.substr(1)] = dataSizeReceivedFromRemovedMappers[reducer];
+        mapperToReducerTable[mapperName(fictiveIdOfRemovedMappers)].add(reducer);
+        mapperToReducerTable[reducer].add(mapperName(fictiveIdOfRemovedMappers));
+      }
+    }
+    data.push({
+      "mapperId": fictiveIdOfRemovedMappers,
+      "sizePerPartition": sizesPerPartitionForRemovedMappers
+    });
+
+    console.log(sizesPerPartitionForRemovedMappers)
+    var mpr = chordMpr(data);
+
+    _.each(mapperToReducerTable, function(value, name) {
+      mpr.addToMap(name);
     });
 
     console.log(mapperToReducerTable);
     mpr.setFilter(function (row, a, b) {
-      return mapperToReducerTable[a.name].has(b.name);
+      if (row.mapperId === fictiveIdOfRemovedMappers) {
+        //console.log(row, a, b)
+      }
+      return mapperToReducerTable[a.name] !== undefined && mapperToReducerTable[a.name].has(b.name);
     })
       .setAccessor(function (recs, a, b) {
         if (!recs[0]) return 0;
@@ -117,6 +183,10 @@
     return 'r' + id
   }
 
+  function isMapper(name) {
+    return name.startsWith('m');
+  }
+
   function isReducer(name) {
     return name.startsWith('r');
   }
@@ -125,7 +195,7 @@
   //  DRAW THE CHORD DIAGRAM
   //*******************************************************************
   function drawChords (matrix, mmap) {
-    var w = 980, h = 800, r1 = h / 2, r0 = r1 - 100;
+    var w = 2000, h = 2000, r1 = h / 2, r0 = r1 - 100;
 
     var fill = d3.scale.ordinal()
       .domain(d3.range(8))
@@ -227,13 +297,12 @@
       .on("mouseout", function (d) { d3.select("#tooltip").style("visibility", "hidden") });
 
     function chordTip (d) {
-      console.log(d)
       var p = d3.format(".2%"), q = d3.format(",.3r");
       return "Data shuffling details:<br/>"
         + p(d.svalue/d.stotal) + " (" + q(d.svalue) + " bytes) of "
-        + "<b>" + d.sname + "</b> sent to <b>" + d.tname + "</b><br/>"
+        + "<b>" + d.sname + "</b> " + (isMapper(d.sname) ? "sent to" : "received from") + " <b>" + d.tname + "</b><br/>"
         + p(d.tvalue/d.ttotal) + " (" + q(d.tvalue) + " bytes) of "
-        + "<b>" + d.tname + "</b> received from <b>" + d.sname + "</b>";
+        + "<b>" + d.tname + "</b> " + (isMapper(d.tname) ? "sent to" : "received from") + " <b>" + d.sname + "</b>";
     }
 
     function groupTip (d) {
