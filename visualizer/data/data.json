@@ -1,0 +1,18 @@
+[  
+  {  
+    "mapperId":1,
+    "sizePerPartition":{
+	  "1": 50,
+	  "2": 100,
+	  "3": 70
+	}
+  },
+  {  
+    "mapperId":2,
+    "sizePerPartition":{
+	  "4": 30,
+	  "2": 20,
+	  "3": 50
+	}
+  }
+]
